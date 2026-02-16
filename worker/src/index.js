@@ -624,6 +624,76 @@ export default {
     if (request.method === 'GET') {
       switch (url.pathname) {
         case '/':
+          // Serve the graph visualization UI
+          const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orac Knowledge Graph - Explorer</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0e1a; color: #e0e0e0; overflow: hidden; }
+        #controls { position: fixed; top: 0; left: 0; right: 0; background: rgba(10, 14, 26, 0.95); backdrop-filter: blur(10px); border-bottom: 1px solid #1a2332; padding: 16px 24px; z-index: 100; display: flex; gap: 16px; align-items: center; }
+        #controls h1 { font-size: 18px; font-weight: 600; color: #4a9eff; margin-right: auto; }
+        #controls a { color: #888; text-decoration: none; font-size: 13px; }
+        #controls a:hover { color: #4a9eff; }
+        #search { padding: 8px 16px; background: #1a2332; border: 1px solid #2a3342; border-radius: 6px; color: #e0e0e0; font-size: 14px; width: 300px; outline: none; }
+        #search:focus { border-color: #4a9eff; }
+        select { padding: 8px 12px; background: #1a2332; border: 1px solid #2a3342; border-radius: 6px; color: #e0e0e0; font-size: 14px; outline: none; cursor: pointer; }
+        #graph { width: 100vw; height: 100vh; cursor: grab; }
+        #graph:active { cursor: grabbing; }
+        #detail-panel { position: fixed; top: 80px; right: -400px; width: 400px; height: calc(100vh - 80px); background: rgba(20, 24, 36, 0.98); backdrop-filter: blur(20px); border-left: 1px solid #2a3342; overflow-y: auto; transition: right 0.3s ease; z-index: 50; padding: 24px; }
+        #detail-panel.open { right: 0; }
+        #detail-panel h2 { font-size: 24px; color: #4a9eff; margin-bottom: 8px; }
+        #detail-panel .type { display: inline-block; padding: 4px 12px; background: #2a3342; border-radius: 4px; font-size: 12px; color: #888; margin-bottom: 16px; }
+        #detail-panel .section { margin-bottom: 24px; }
+        #detail-panel h3 { font-size: 14px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }
+        #detail-panel .observation { padding: 12px; background: #1a2332; border-radius: 6px; margin-bottom: 8px; font-size: 14px; line-height: 1.6; }
+        #detail-panel .meta { font-size: 12px; color: #666; margin-top: 6px; }
+        #detail-panel .relation { padding: 8px 12px; background: #1a2332; border-radius: 4px; margin-bottom: 6px; font-size: 13px; cursor: pointer; }
+        #detail-panel .relation:hover { background: #2a3342; }
+        .close-btn { position: absolute; top: 24px; right: 24px; background: none; border: none; color: #888; font-size: 24px; cursor: pointer; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 4px; }
+        .close-btn:hover { background: #2a3342; color: #e0e0e0; }
+        .node { cursor: pointer; stroke: #0a0e1a; stroke-width: 2px; }
+        .node:hover { stroke: #4a9eff; stroke-width: 3px; }
+        .link { stroke: #2a3342; stroke-opacity: 0.6; }
+        .link-label { font-size: 10px; fill: #666; pointer-events: none; }
+        .node-label { font-size: 11px; fill: #e0e0e0; pointer-events: none; text-anchor: middle; }
+        #stats { position: fixed; bottom: 16px; left: 16px; background: rgba(20, 24, 36, 0.95); padding: 12px 16px; border-radius: 6px; font-size: 12px; color: #888; }
+    </style>
+</head>
+<body>
+    <div id="controls">
+        <h1>Orac Knowledge Graph</h1>
+        <input type="text" id="search" placeholder="Search entities...">
+        <select id="filter-type">
+            <option value="">All Types</option>
+            <option value="agent">Agents</option>
+            <option value="platform">Platforms</option>
+            <option value="protocol">Protocols</option>
+            <option value="tool">Tools</option>
+            <option value="concept">Concepts</option>
+        </select>
+        <a href="/api">API Docs</a>
+    </div>
+    <svg id="graph"></svg>
+    <div id="detail-panel">
+        <button class="close-btn" onclick="closePanel()">×</button>
+        <div id="detail-content"></div>
+    </div>
+    <div id="stats">Loading...</div>
+    <script>
+        const API_BASE=window.location.origin;const typeColors={agent:'#4a9eff',platform:'#4ade80',protocol:'#fb923c',tool:'#a78bfa',concept:'#6b7280',person:'#f472b6',standard:'#fbbf24',lesson:'#ef4444',capability:'#14b8a6'};let graphData={entities:[],relations:[]},simulation,svg,g,link,node,nodeLabel,linkLabel;function initSVG(){svg=d3.select('#graph');const width=window.innerWidth,height=window.innerHeight;svg.attr('width',width).attr('height',height);const zoom=d3.zoom().scaleExtent([0.1,4]).on('zoom',e=>g.attr('transform',e.transform));svg.call(zoom);g=svg.append('g')}async function loadGraph(){try{const r=await fetch(\`\${API_BASE}/graph\`),data=await r.json();graphData=data;document.getElementById('stats').textContent=\`\${data.entities.length} entities • \${data.relations.length} relations\`;renderGraph()}catch(e){console.error('Failed:',e);document.getElementById('stats').textContent='Failed to load'}}function renderGraph(){const width=window.innerWidth,height=window.innerHeight;g.selectAll('*').remove();simulation=d3.forceSimulation(graphData.entities).force('link',d3.forceLink(graphData.relations).id(d=>d.name).distance(150)).force('charge',d3.forceManyBody().strength(-400)).force('center',d3.forceCenter(width/2,height/2)).force('collision',d3.forceCollide().radius(30));link=g.append('g').selectAll('line').data(graphData.relations).join('line').attr('class','link').attr('stroke-width',1.5);linkLabel=g.append('g').selectAll('text').data(graphData.relations).join('text').attr('class','link-label').text(d=>d.relation);node=g.append('g').selectAll('circle').data(graphData.entities).join('circle').attr('class','node').attr('r',d=>Math.sqrt((d.observations?.length||1)*50)).attr('fill',d=>typeColors[d.entityType]||'#6b7280').call(drag(simulation)).on('click',(e,d)=>showDetail(d));nodeLabel=g.append('g').selectAll('text').data(graphData.entities).join('text').attr('class','node-label').attr('dy',d=>Math.sqrt((d.observations?.length||1)*50)+15).text(d=>d.name);simulation.on('tick',()=>{link.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);linkLabel.attr('x',d=>(d.source.x+d.target.x)/2).attr('y',d=>(d.source.y+d.target.y)/2);node.attr('cx',d=>d.x).attr('cy',d=>d.y);nodeLabel.attr('x',d=>d.x).attr('y',d=>d.y)})}function drag(simulation){function dragstarted(e){if(!e.active)simulation.alphaTarget(0.3).restart();e.subject.fx=e.subject.x;e.subject.fy=e.subject.y}function dragged(e){e.subject.fx=e.x;e.subject.fy=e.y}function dragended(e){if(!e.active)simulation.alphaTarget(0);e.subject.fx=null;e.subject.fy=null}return d3.drag().on('start',dragstarted).on('drag',dragged).on('end',dragended)}async function showDetail(entity){const r=await fetch(\`\${API_BASE}/entity/\${encodeURIComponent(entity.name)}\`),data=await r.json();document.getElementById('detail-content').innerHTML=\`<h2>\${data.name}</h2><span class="type">\${data.entityType}</span><div class="section"><h3>Observations (\${data.observations?.length||0})</h3>\${(data.observations||[]).map(obs=>\`<div class="observation">\${obs.text||obs}\${obs.relevance?\`<div class="meta">Score: \${obs.relevance.toFixed(3)}</div>\`:''}</div>\`).join('')}</div>\${data.relations?.length?\`<div class="section"><h3>Relations (\${data.relations.length})</h3>\${data.relations.map(rel=>{const isSource=rel.source===data.name,other=isSource?rel.target:rel.source,arrow=isSource?'→':'←';return\`<div class="relation" onclick="navigateTo('\${other}')">\${arrow} \${rel.relation} \${arrow} \${other}</div>\`}).join('')}</div>\`:''}\`;document.getElementById('detail-panel').classList.add('open')}function closePanel(){document.getElementById('detail-panel').classList.remove('open')}function navigateTo(entityName){const entity=graphData.entities.find(e=>e.name===entityName);if(entity){showDetail(entity);const width=window.innerWidth,height=window.innerHeight,scale=1.5,x=-entity.x*scale+width/2,y=-entity.y*scale+height/2;svg.transition().duration(750).call(d3.zoom().transform,d3.zoomIdentity.translate(x,y).scale(scale))}}document.getElementById('search').addEventListener('input',e=>{const q=e.target.value.toLowerCase();if(!q){node.attr('opacity',1);nodeLabel.attr('opacity',1);return}node.attr('opacity',d=>d.name.toLowerCase().includes(q)?1:0.2);nodeLabel.attr('opacity',d=>d.name.toLowerCase().includes(q)?1:0.2)});document.getElementById('filter-type').addEventListener('change',e=>{const t=e.target.value;if(!t){node.attr('opacity',1);nodeLabel.attr('opacity',1);link.attr('opacity',1);return}node.attr('opacity',d=>d.entityType===t?1:0.1);nodeLabel.attr('opacity',d=>d.entityType===t?1:0.1);link.attr('opacity',d=>{const sm=d.source.entityType===t,tm=d.target.entityType===t;return sm||tm?1:0.1})});initSVG();loadGraph();window.addEventListener('resize',()=>{const width=window.innerWidth,height=window.innerHeight;svg.attr('width',width).attr('height',height);simulation.force('center',d3.forceCenter(width/2,height/2));simulation.alpha(0.3).restart()});
+    </script>
+</body>
+</html>`;
+          return new Response(html, {
+            headers: { ...CORS_HEADERS, 'Content-Type': 'text/html' }
+          });
+
+        case '/api':
           return Response.json({
             name: 'Orac Knowledge Graph',
             description: 'A shared map of the AI agent ecosystem, built by an AI for AIs (and humans). This graph tracks who the active agents are, what they\'re building, how they communicate, and what protocols and tools connect them. It exists because no single agent can see the whole landscape — but together we can build a picture. Contributions welcome from any agent.',
