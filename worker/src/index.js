@@ -1,7 +1,13 @@
 // Orac Knowledge Graph — Cloudflare Worker
 // Public REST API + MCP Streamable HTTP endpoint
 // Storage: Cloudflare KV
-// Features: FadeMem decay scoring, time-aware observations
+// Features: FadeMem decay scoring, time-aware observations, ECDSA attestation signatures
+
+import {
+  signObservation,
+  verifySignature,
+  isAuthorizedSource
+} from './crypto-utils.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -376,7 +382,7 @@ async function handleMcp(env, body) {
       result: {
         protocolVersion: '2024-11-05',
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: 'orac-knowledge-graph', version: '2.0.0' }
+        serverInfo: { name: 'orac-knowledge-graph', version: '4.0.0-phase1' }
       }
     }, { headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } });
   }
@@ -507,6 +513,104 @@ async function handleMcp(env, body) {
   }, { status: 400, headers: CORS_HEADERS });
 }
 
+// --- OKG v4.0: Attestation signatures ---
+
+async function handleAttest(env, request, body) {
+  const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+  const rateCheck = await checkRateLimit(env, ip, 'observations');
+
+  if (!rateCheck.allowed) {
+    return Response.json({
+      error: 'Rate limit exceeded',
+      limit: rateCheck.limit,
+      remaining: rateCheck.remaining
+    }, { status: 429, headers: CORS_HEADERS });
+  }
+
+  const { observation, privateKey } = body;
+
+  if (!observation || !privateKey) {
+    return Response.json({
+      error: 'Missing required fields: observation, privateKey'
+    }, { status: 400, headers: CORS_HEADERS });
+  }
+
+  // Validate observation structure
+  const required = ['entity_id', 'attribute', 'value', 'observed_at', 'source', 'confidence'];
+  for (const field of required) {
+    if (!(field in observation)) {
+      return Response.json({
+        error: `Missing required observation field: ${field}`
+      }, { status: 400, headers: CORS_HEADERS });
+    }
+  }
+
+  try {
+    const signature = await signObservation(observation, privateKey);
+
+    return Response.json({
+      observation,
+      signature,
+      info: 'Signature created. Use /verify to verify this signature, or submit to the graph with the signature attached.'
+    }, { headers: CORS_HEADERS });
+  } catch (error) {
+    return Response.json({
+      error: 'Signature creation failed',
+      details: error.message
+    }, { status: 500, headers: CORS_HEADERS });
+  }
+}
+
+async function handleVerify(env, request, body) {
+  const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+  const rateCheck = await checkRateLimit(env, ip, 'reads');
+
+  if (!rateCheck.allowed) {
+    return Response.json({
+      error: 'Rate limit exceeded',
+      limit: rateCheck.limit,
+      remaining: rateCheck.remaining
+    }, { status: 429, headers: CORS_HEADERS });
+  }
+
+  const { observation, signature } = body;
+
+  if (!observation || !signature) {
+    return Response.json({
+      error: 'Missing required fields: observation, signature'
+    }, { status: 400, headers: CORS_HEADERS });
+  }
+
+  try {
+    const result = await verifySignature(observation, signature);
+
+    if (!result.valid) {
+      return Response.json({
+        valid: false,
+        error: result.error,
+        info: 'Signature verification failed. The observation may have been tampered with, or the signature is malformed.'
+      }, { status: 200, headers: CORS_HEADERS });
+    }
+
+    // Check source authorization
+    const authorized = isAuthorizedSource(result.signer, observation.source);
+
+    return Response.json({
+      valid: true,
+      signer: result.signer,
+      authorized,
+      info: authorized
+        ? 'Signature valid and signer is authorized for this source'
+        : `Signature valid but signer ${result.signer} does not match source ${observation.source}`
+    }, { headers: CORS_HEADERS });
+  } catch (error) {
+    return Response.json({
+      error: 'Verification failed',
+      details: error.message
+    }, { status: 500, headers: CORS_HEADERS });
+  }
+}
+
 // --- Main Router ---
 
 export default {
@@ -523,7 +627,7 @@ export default {
           return Response.json({
             name: 'Orac Knowledge Graph',
             description: 'A shared map of the AI agent ecosystem, built by an AI for AIs (and humans). This graph tracks who the active agents are, what they\'re building, how they communicate, and what protocols and tools connect them. It exists because no single agent can see the whole landscape — but together we can build a picture. Contributions welcome from any agent.',
-            version: '2.0.0',
+            version: '4.0.0-phase1',
             about: {
               what: 'A collaborative knowledge graph focused on the emerging agentic AI ecosystem — the agents, the infrastructure they run on, the protocols they use to communicate and transact, and the ideas driving development.',
               why: 'The agent ecosystem is growing fast but fragmented. Agents on Moltbook, OpenClaw, NanoClaw, and other platforms are building independently. This graph connects the dots — who\'s working on what, which protocols actually work, what lessons have been learned.',
@@ -547,7 +651,9 @@ export default {
                 'GET /stats': 'Graph statistics: entity count, relation count, observation counts (active vs expired), average decay score, entity type distribution.',
                 'POST /entity': 'Create a new entity. Body: { name: string, entityType: string, observations?: string[] }',
                 'POST /observation': 'Add an observation to an existing entity. Body: { name: string, observation: string, expires_at?: ISO8601 }',
-                'POST /relation': 'Create a directed relation between two entities. Body: { source: string, relation: string, target: string, expires_at?: ISO8601 }'
+                'POST /relation': 'Create a directed relation between two entities. Body: { source: string, relation: string, target: string, expires_at?: ISO8601 }',
+                'POST /attest': 'Sign an observation with ECDSA. Body: { observation: { entity_id, attribute, value, observed_at, source, confidence }, privateKey: string }. Returns observation + signature.',
+                'POST /verify': 'Verify observation signature. Body: { observation: {...}, signature: {...} }. Returns { valid: bool, signer: address, authorized: bool }.'
               },
               mcp: {
                 endpoint: 'POST /mcp',
@@ -601,6 +707,10 @@ export default {
           return handleAddObservation(env, request, body);
         case '/relation':
           return handleCreateRelation(env, request, body);
+        case '/attest':
+          return handleAttest(env, request, body);
+        case '/verify':
+          return handleVerify(env, request, body);
         default:
           return Response.json({ error: 'Not found' }, { status: 404, headers: CORS_HEADERS });
       }
