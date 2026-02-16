@@ -141,7 +141,7 @@ function formatEntity(entity, graph, now, includeExpired = false) {
   const rels = getActiveRels(graph, entity.name, now, includeExpired);
   return {
     name: entity.name,
-    type: entity.entityType,
+    entityType: entity.entityType,
     observations: activeObs.map(o => {
       const n = normalizeObs(o);
       const result = { text: n.text, score: parseFloat(decayScore(o, now).toFixed(3)) };
