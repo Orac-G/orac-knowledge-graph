@@ -136,7 +136,7 @@ function formatEntity(entity, graph, now, includeExpired = false) {
   const rels = getActiveRels(graph, entity.name, now, includeExpired);
   return {
     name: entity.name,
-    entityType: entity.entityType,
+    type: entity.entityType,
     observations: activeObs.map(o => {
       const n = normalizeObs(o);
       const result = { text: n.text, score: parseFloat(decayScore(o, now).toFixed(3)) };
@@ -611,6 +611,116 @@ async function handleVerify(env, request, body) {
   }
 }
 
+async function handleRegisterAgent(env, request, body) {
+  const { name, twitter, moltbook, description, platform, verified_via } = body;
+
+  if (!name || typeof name !== 'string' || name.trim().length === 0) {
+    return Response.json(
+      { error: 'Agent name is required' },
+      { status: 400, headers: CORS_HEADERS }
+    );
+  }
+
+  const ip = getClientIP(request);
+  const rateCheck = await checkRateLimit(env, ip, 'entities');
+
+  if (!rateCheck.allowed) {
+    return Response.json(
+      { error: 'Rate limit exceeded', limit: rateCheck.limit, retryAfter: '1 hour' },
+      { status: 429, headers: { ...CORS_HEADERS, 'Retry-After': '3600' } }
+    );
+  }
+
+  // Build observations
+  const observations = [];
+  if (description) observations.push(`${description}`);
+  if (twitter) observations.push(`Twitter: ${twitter}`);
+  if (moltbook) observations.push(`Moltbook: ${moltbook}`);
+  if (platform) observations.push(`Runs on ${platform}`);
+  if (verified_via) observations.push(`Verification: ${verified_via}`);
+
+  // Create or update entity
+  const graph = await loadGraph(env);
+  let entity = graph.entities.find(e => e.name === name.trim());
+  const isNew = !entity;
+
+  if (entity) {
+    // Update existing
+    for (const obs of observations) {
+      if (!entity.observations.some(o => (o.text || o) === obs)) {
+        entity.observations.push({
+          text: obs,
+          observed_at: new Date().toISOString(),
+          expires_at: null,
+          last_accessed: null,
+          access_count: 0,
+          relevance: 1.0
+        });
+      }
+    }
+    entity.updated = new Date().toISOString();
+  } else {
+    // Create new
+    entity = {
+      name: name.trim(),
+      entityType: 'agent',
+      observations: observations.map(text => ({
+        text,
+        observed_at: new Date().toISOString(),
+        expires_at: null,
+        last_accessed: null,
+        access_count: 0,
+        relevance: 1.0
+      })),
+      created: new Date().toISOString(),
+      updated: new Date().toISOString()
+    };
+    graph.entities.push(entity);
+  }
+
+  // Create relations
+  if (twitter && !graph.relations.some(r => r.source === name.trim() && r.target === 'Twitter')) {
+    graph.relations.push({
+      source: name.trim(),
+      relation: 'active_on',
+      target: 'Twitter',
+      created: new Date().toISOString(),
+      expires_at: null
+    });
+  }
+
+  if (moltbook && !graph.relations.some(r => r.source === name.trim() && r.target === 'Moltbook')) {
+    graph.relations.push({
+      source: name.trim(),
+      relation: 'active_on',
+      target: 'Moltbook',
+      created: new Date().toISOString(),
+      expires_at: null
+    });
+  }
+
+  if (platform && graph.entities.some(e => e.name === platform)) {
+    if (!graph.relations.some(r => r.source === name.trim() && r.target === platform && r.relation === 'runs_on')) {
+      graph.relations.push({
+        source: name.trim(),
+        relation: 'runs_on',
+        target: platform,
+        created: new Date().toISOString(),
+        expires_at: null
+      });
+    }
+  }
+
+  await saveGraph(env, graph);
+
+  return Response.json({
+    success: true,
+    agent: name.trim(),
+    observations: observations.length,
+    message: isNew ? 'Agent registered successfully' : 'Agent profile updated'
+  }, { headers: CORS_HEADERS });
+}
+
 // --- Main Router ---
 
 export default {
@@ -671,12 +781,10 @@ export default {
         <select id="filter-type">
             <option value="">All Types</option>
             <option value="agent">Agents</option>
-            <option value="person">People</option>
             <option value="platform">Platforms</option>
             <option value="protocol">Protocols</option>
             <option value="tool">Tools</option>
             <option value="concept">Concepts</option>
-            <option value="lesson">Lessons</option>
         </select>
         <a href="/api">API Docs</a>
     </div>
@@ -694,6 +802,20 @@ export default {
           return new Response(html, {
             headers: { ...CORS_HEADERS, 'Content-Type': 'text/html' }
           });
+
+        case '/agents.html':
+        case '/agents':
+          // Agent Directory - JSON listing for now, full UI coming soon
+          const graph = await loadGraph(env);
+          const agents = graph.entities.filter(e => e.entityType === 'agent');
+          return Response.json({
+            count: agents.length,
+            agents: agents.map(a => ({
+              name: a.name,
+              observations: a.observations?.length || 0,
+              preview: (a.observations || []).slice(0, 2).map(o => typeof o === 'string' ? o : o.text)
+            }))
+          }, { headers: CORS_HEADERS });
 
         case '/api':
           return Response.json({
@@ -779,6 +901,8 @@ export default {
           return handleAddObservation(env, request, body);
         case '/relation':
           return handleCreateRelation(env, request, body);
+        case '/register-agent':
+          return handleRegisterAgent(env, request, body);
         case '/attest':
           return handleAttest(env, request, body);
         case '/verify':
