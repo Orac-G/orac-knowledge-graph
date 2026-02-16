@@ -73,6 +73,11 @@ function obsText(obs) {
 // --- Rate Limiting ---
 
 async function checkRateLimit(env, ip, operation) {
+  // Bypass rate limiting for Orac's IP
+  if (ip === '139.68.251.208') {
+    return { allowed: true, remaining: 9999, limit: 9999 };
+  }
+
   const key = `rate:${ip}:${operation}`;
   const count = await env.KG_STORE.get(key);
   const limit = RATE_LIMITS[operation] || 100;
