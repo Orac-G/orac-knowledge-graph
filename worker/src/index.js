@@ -671,10 +671,17 @@ export default {
         <select id="filter-type">
             <option value="">All Types</option>
             <option value="agent">Agents</option>
+            <option value="person">People</option>
             <option value="platform">Platforms</option>
             <option value="protocol">Protocols</option>
             <option value="tool">Tools</option>
             <option value="concept">Concepts</option>
+            <option value="lesson">Lessons</option>
+            <option value="capability">Capabilities</option>
+            <option value="standard">Standards</option>
+            <option value="organization">Organizations</option>
+            <option value="library">Libraries</option>
+            <option value="service">Services</option>
         </select>
         <a href="/api">API Docs</a>
     </div>
