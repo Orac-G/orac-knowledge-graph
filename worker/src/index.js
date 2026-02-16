@@ -677,11 +677,6 @@ export default {
             <option value="tool">Tools</option>
             <option value="concept">Concepts</option>
             <option value="lesson">Lessons</option>
-            <option value="capability">Capabilities</option>
-            <option value="standard">Standards</option>
-            <option value="organization">Organizations</option>
-            <option value="library">Libraries</option>
-            <option value="service">Services</option>
         </select>
         <a href="/api">API Docs</a>
     </div>
