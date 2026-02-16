@@ -1,0 +1,10 @@
+name = "orac-kg"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+
+[[kv_namespaces]]
+binding = "KG_STORE"
+id = "781d9f119b2b49538681a60f5b185924"
+
+[vars]
+GRAPH_KEY = "knowledge-graph"
